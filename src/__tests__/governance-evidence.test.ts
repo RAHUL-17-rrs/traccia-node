@@ -83,6 +83,41 @@ describe('governance evidence scoping', () => {
     ]);
   });
 
+  it('keeps concurrent runs of different agents apart', async () => {
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 1));
+    await Promise.all([
+      govern({ agentId: 'agent-a', name: 'run_a' })(async () => {
+        await readCustomer({ customer_id: 'cust-1' });
+        await tick();
+        await tick();
+        await updateCustomer({ customer_id: 'cust-1' });
+      })(),
+      govern({ agentId: 'agent-b', name: 'run_b' })(async () => {
+        await tick();
+        await updateCustomer({ customer_id: 'cust-1' });
+      })(),
+    ]);
+
+    const byAgent = Object.fromEntries(
+      post.mock.calls
+        .map((call) => call[1] as CheckBody & { agent_id: string })
+        .filter((body) => body.action.name === 'update_customer')
+        .map((body) => [body.agent_id, body.context.freshness]),
+    );
+    expect(byAgent['agent-a']).toEqual([expect.objectContaining({ tool: 'read_customer' })]);
+    expect(byAgent['agent-b']).toBeUndefined();
+  });
+
+  it('keeps a nested govern call for another agent separate', async () => {
+    const inner = govern({ agentId: 'agent-b', name: 'inner' })(async () => updateCustomer({ customer_id: 'cust-1' }));
+    await govern({ agentId: 'agent-a', name: 'outer' })(async () => {
+      await readCustomer({ customer_id: 'cust-1' });
+      await inner();
+    })();
+
+    expect(writeFreshness()).toEqual([undefined]);
+  });
+
   it('drops evidence when the run ends', async () => {
     const retrieve = observe({ name: 'retrieve' })(async () => {
       getCurrentSpan()?.setAttribute('traccia.retrieval.chunk_count', 3);
