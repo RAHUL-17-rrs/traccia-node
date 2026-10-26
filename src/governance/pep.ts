@@ -4,7 +4,7 @@
 
 import axios, { AxiosInstance } from 'axios';
 import { loadConfig } from '../config/config';
-import { getAgentId, getConfig, pepEnabled } from '../config/runtime-config';
+import { getAgentId, getConfig, pepEnabled, pepFailOpen } from '../config/runtime-config';
 import { getCurrentSpan } from '../context/context';
 import {
   lastReads,
@@ -22,7 +22,6 @@ const BUDGET_TTL_MS = 5000;
 
 let httpClient: AxiosInstance = axios.create({ timeout: 2000 });
 const remainingBudget = new Map<string, { ts: number; value: number }>();
-const RESOURCE_ID_KEYS = ['resource_id', 'customer_id', 'id'] as const;
 
 export function _setPepHttpClientForTests(client: AxiosInstance): void {
   httpClient = client;
@@ -36,7 +35,11 @@ export function _resetPepStateForTests(): void {
   httpClient = axios.create({ timeout: 2000 });
 }
 
-/** The entity a tool call reads or writes, when its arguments or result name one. */
+/**
+ * The customer a tool call reads or writes, when its arguments or result name one.
+ * Only customer identity counts. A generic `id` (a policy or document id) does not
+ * make a read customer-specific, so tool-level reads always reach the guard.
+ */
 function resourceId(row: unknown): string | undefined {
   if (!row || typeof row !== 'object' || Array.isArray(row)) {
     return undefined;
@@ -46,11 +49,9 @@ function resourceId(row: unknown): string | undefined {
   if (customer) {
     return customer;
   }
-  for (const key of RESOURCE_ID_KEYS) {
-    const value = record[key];
-    if (value != null && value !== '' && typeof value !== 'object') {
-      return String(value);
-    }
+  const value = record.customer_id;
+  if (value != null && value !== '' && typeof value !== 'object') {
+    return String(value);
   }
   return undefined;
 }
@@ -291,6 +292,23 @@ function blockedMessage(decision: Record<string, unknown>): string {
   return parts.join('. ');
 }
 
+/** No decision from Traccia. Allow, unless the govern() run is fail-closed. */
+function unresolved(reason: string, detail: string, warn = true): Record<string, unknown> {
+  if (!pepFailOpen()) {
+    console.error(
+      `[traccia.governance] policy check could not complete (${detail}); blocking call (failOpen: false)`,
+    );
+    throw new AgentBlockedError(
+      `Policy check could not complete (${detail}). Blocking because failOpen is false.`,
+      { reasons: [reason] },
+    );
+  }
+  if (warn) {
+    console.warn(`[traccia.governance] policy check could not complete (${detail}); allowing call`);
+  }
+  return { effect: 'allow', would_have: false, reasons: [reason] };
+}
+
 export async function checkPolicy(input: {
   action: Record<string, unknown>;
   context?: Record<string, unknown>;
@@ -300,11 +318,11 @@ export async function checkPolicy(input: {
   const apiKey = config.tracing.api_key || process.env.TRACCIA_API_KEY;
   const endpoint = config.tracing.endpoint || process.env.TRACCIA_ENDPOINT;
   if (!apiKey || !endpoint) {
-    return { effect: 'allow', would_have: false, reasons: ['missing_credentials'] };
+    return unresolved('missing_credentials', 'Traccia API key or endpoint not set', false);
   }
   const agentId = getAgentId() || process.env.TRACCIA_AGENT_ID;
   if (!agentId) {
-    return { effect: 'allow', would_have: false, reasons: ['missing_agent_id'] };
+    return unresolved('missing_agent_id', 'no agentId on init, govern(), or TRACCIA_AGENT_ID', false);
   }
   const span = getCurrentSpan();
   const payload = {
@@ -354,15 +372,9 @@ export async function checkPolicy(input: {
       throw error;
     }
     if (axios.isAxiosError(error) && error.response) {
-      console.warn(
-        '[traccia.governance] policy check HTTP',
-        error.response.status,
-        '; allowing call',
-      );
-      return { effect: 'allow', would_have: false, reasons: ['check_http_error'] };
+      return unresolved('check_http_error', `HTTP ${error.response.status}`);
     }
-    console.warn('[traccia.governance] policy check failed; allowing call', error);
-    return { effect: 'allow', would_have: false, reasons: ['check_error'] };
+    return unresolved('check_error', error instanceof Error ? error.message : String(error));
   }
 }
 

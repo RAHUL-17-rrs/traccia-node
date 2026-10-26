@@ -131,6 +131,32 @@ describe('governance evidence scoping', () => {
     expect(writeFreshness()).toEqual([undefined]);
   });
 
+  it('keeps tool-level reads when filtering customer-specific evidence', async () => {
+    const getRefundPolicy = observe({ name: 'get_refund_policy', type: 'tool' })(async () => ({
+      id: 'policy-v1',
+      as_of: '2026-01-01T00:00:00Z',
+    }));
+    const readCustomerRecord = observe({ name: 'read_customer_record', type: 'tool' })(
+      async (args: { customer_id: string }) => ({ customer_id: args.customer_id, as_of: '2026-10-14T10:00:00Z' }),
+    );
+    const issueRefund = observe({ name: 'issue_refund', type: 'tool' })(
+      async (_args: { customer: { id: string }; amount: number }) => ({ ok: true }),
+    );
+
+    await govern({ agentId: 'agent-a', name: 'run' })(async () => {
+      await getRefundPolicy();
+      await readCustomerRecord({ customer_id: 'bob' });
+      await issueRefund({ customer: { id: 'alice' }, amount: 10 });
+    })();
+
+    const refund = post.mock.calls
+      .map((call) => call[1] as CheckBody)
+      .find((body) => body.action.name === 'issue_refund');
+    expect(refund?.context.freshness).toEqual([
+      { tool: 'get_refund_policy', read_at: '2026-01-01T00:00:00Z', field: 'as_of' },
+    ]);
+  });
+
   it('drops evidence when the run ends', async () => {
     const retrieve = observe({ name: 'retrieve' })(async () => {
       getCurrentSpan()?.setAttribute('traccia.retrieval.chunk_count', 3);
