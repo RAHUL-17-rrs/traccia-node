@@ -108,6 +108,19 @@ describe('governance evidence scoping', () => {
     expect(byAgent['agent-b']).toBeUndefined();
   });
 
+  it('keeps govern runs under one parent trace apart', async () => {
+    const first = govern({ agentId: 'agent-a', name: 'first' })(async () => readCustomer({ customer_id: 'cust-1' }));
+    const second = govern({ agentId: 'agent-a', name: 'second' })(async () =>
+      updateCustomer({ customer_id: 'cust-1' }),
+    );
+    await observe({ name: 'request' })(async () => {
+      await first();
+      await second();
+    })();
+
+    expect(writeFreshness()).toEqual([undefined]);
+  });
+
   it('keeps a nested govern call for another agent separate', async () => {
     const inner = govern({ agentId: 'agent-b', name: 'inner' })(async () => updateCustomer({ customer_id: 'cust-1' }));
     await govern({ agentId: 'agent-a', name: 'outer' })(async () => {

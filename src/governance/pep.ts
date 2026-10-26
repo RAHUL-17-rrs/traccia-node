@@ -12,7 +12,7 @@ import {
   promptByTrace,
   ReadEvidence,
   retrievalByTrace,
-  traceKey,
+  runKey,
 } from './evidence';
 import { AgentBlockedError, ApprovalPending } from './policy';
 
@@ -55,9 +55,9 @@ function resourceId(row: unknown): string | undefined {
   return undefined;
 }
 
-/** Freshness evidence belongs to one tenant, agent and run (trace). */
+/** Freshness evidence belongs to one tenant, agent and run. */
 function readScope(): { key: string; traceId: string } | undefined {
-  const traceId = traceKey(getCurrentSpan()?.context?.traceId);
+  const traceId = runKey(getCurrentSpan()?.context?.traceId);
   if (!traceId) {
     return undefined;
   }
@@ -102,7 +102,7 @@ export function noteRetrievalAttributes(
   traceId: string | undefined,
   attributes: Record<string, unknown> | undefined,
 ): void {
-  const key = traceKey(traceId);
+  const key = runKey(traceId);
   if (!key || !attributes) {
     return;
   }
@@ -136,7 +136,7 @@ function freshnessContext(resource?: string): Array<Record<string, string>> {
 }
 
 function retrievalContext(traceId: string | undefined): Record<string, unknown> {
-  const key = traceKey(traceId);
+  const key = runKey(traceId);
   if (!key) {
     return { present: false };
   }
@@ -162,7 +162,7 @@ export function notePromptAttributes(
   if (!name) {
     return;
   }
-  const key = traceKey(traceId);
+  const key = runKey(traceId);
   if (!key) {
     return;
   }
@@ -189,7 +189,7 @@ function promptContext(): Record<string, unknown> {
   if (fromSpan.name) {
     return fromSpan;
   }
-  const traceId = traceKey(span?.context?.traceId);
+  const traceId = runKey(span?.context?.traceId);
   if (!traceId) {
     return fromSpan;
   }

@@ -1,10 +1,17 @@
 /**
  * Bounded, run-scoped evidence the PEP sends with policy checks.
  *
- * Evidence (last reads, retrieval counts, compiled prompts) belongs to one run.
+ * Evidence (last reads, retrieval counts, compiled prompts) belongs to one run:
+ * one top-level govern() call (nested calls join it), so separate runs never share
+ * evidence even under one parent trace. Outside govern() the trace is the run.
  * Entries are keyed by trace id, dropped when the local root span ends, and
  * bounded by expiry and size so traces that never end here cannot grow memory.
  */
+
+import { AsyncLocalStorage } from 'async_hooks';
+import { randomUUID } from 'crypto';
+
+const runScope = new AsyncLocalStorage<string>();
 
 export const MAX_TRACES = 1024;
 export const TTL_MS = 60 * 60 * 1000;
@@ -93,12 +100,34 @@ export function traceKey(traceId: unknown): string | undefined {
   return /^0*$/.test(text) ? undefined : text;
 }
 
-/** Drop all evidence recorded for a finished run. */
+/** The run evidence belongs to: the enclosing govern() run, else the trace. */
+export function runKey(traceId: unknown): string | undefined {
+  return runScope.getStore() ?? traceKey(traceId);
+}
+
+function forget(run: string): void {
+  for (const store of STORES) {
+    store.forgetTrace(run);
+  }
+}
+
+/** Drop all evidence recorded for a finished trace. */
 export function forgetTrace(traceId: unknown): void {
   const key = traceKey(traceId);
   if (key) {
-    for (const store of STORES) {
-      store.forgetTrace(key);
-    }
+    forget(key);
+  }
+}
+
+/** Run fn as its own run unless already inside one; the run's evidence is dropped when it settles. */
+export async function governedRun<T>(fn: () => Promise<T>): Promise<T> {
+  if (runScope.getStore() !== undefined) {
+    return fn();
+  }
+  const run = `run-${randomUUID()}`;
+  try {
+    return await runScope.run(run, fn);
+  } finally {
+    forget(run);
   }
 }
