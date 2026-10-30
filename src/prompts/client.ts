@@ -3,7 +3,7 @@
  */
 
 import axios, { AxiosInstance } from 'axios';
-import { loadConfig } from '../config/config';
+import { resolveClientCredentials } from '../config/client-config';
 import { DEFAULT_ENDPOINT } from '../exporter/http-exporter';
 import { getTracer } from '../auto';
 import { ISpan } from '../types';
@@ -18,14 +18,20 @@ export class PromptFetchError extends Error {
 }
 
 let httpClient: AxiosInstance = axios.create({ timeout: 5000 });
-let configuredPromptApiBase: string | undefined;
+
+const PROMPT_API_BASE_KEY = Symbol.for('traccia.promptApiBase');
+
+type PromptApiBaseHost = typeof globalThis & { [PROMPT_API_BASE_KEY]?: string };
+
+/** One process shares the init() prompt API base across the separately bundled entry points. */
+const host = globalThis as PromptApiBaseHost;
 
 export function setPromptApiBase(base?: string | null): void {
-  configuredPromptApiBase = base ? String(base).replace(/\/$/, '') : undefined;
+  host[PROMPT_API_BASE_KEY] = base ? String(base).replace(/\/$/, '') : undefined;
 }
 
 export function getPromptApiBase(): string | undefined {
-  return configuredPromptApiBase;
+  return host[PROMPT_API_BASE_KEY];
 }
 
 export function _setHttpClientForTests(client: AxiosInstance): void {
@@ -34,7 +40,7 @@ export function _setHttpClientForTests(client: AxiosInstance): void {
 
 export function _resetHttpClientForTests(): void {
   httpClient = axios.create({ timeout: 5000 });
-  configuredPromptApiBase = undefined;
+  delete host[PROMPT_API_BASE_KEY];
 }
 
 export function deriveBaseUrl(tracesEndpoint: string): string {
@@ -47,9 +53,9 @@ export function resolveCredentials(opts?: {
   endpoint?: string;
   promptApiBase?: string;
 }): { apiKey: string; baseUrl: string } {
-  const cfg = loadConfig();
-  const apiKey = opts?.apiKey || cfg.tracing.api_key || '';
-  const traces = opts?.endpoint || cfg.tracing.endpoint || DEFAULT_ENDPOINT;
+  const resolved = resolveClientCredentials({ apiKey: opts?.apiKey, endpoint: opts?.endpoint });
+  const apiKey = resolved.apiKey || '';
+  const traces = resolved.endpoint || DEFAULT_ENDPOINT;
   if (!apiKey) {
     throw new PromptFetchError(
       'Traccia API key not found. Call init({ apiKey }) or set TRACCIA_API_KEY before loadPrompt.',
@@ -57,7 +63,7 @@ export function resolveCredentials(opts?: {
   }
   let base =
     opts?.promptApiBase ||
-    configuredPromptApiBase ||
+    getPromptApiBase() ||
     process.env.TRACCIA_PROMPT_API_BASE ||
     undefined;
   if (!base) {
