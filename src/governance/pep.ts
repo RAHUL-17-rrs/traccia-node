@@ -3,7 +3,7 @@
  */
 
 import axios, { AxiosInstance } from 'axios';
-import { loadConfig } from '../config/config';
+import { resolveClientCredentials } from '../config/client-config';
 import { getAgentId, getConfig, pepEnabled, pepFailOpen } from '../config/runtime-config';
 import { getCurrentSpan } from '../context/context';
 import {
@@ -314,9 +314,7 @@ export async function checkPolicy(input: {
   context?: Record<string, unknown>;
   resource?: Record<string, unknown>;
 }): Promise<Record<string, unknown>> {
-  const config = loadConfig();
-  const apiKey = config.tracing.api_key || process.env.TRACCIA_API_KEY;
-  const endpoint = config.tracing.endpoint || process.env.TRACCIA_ENDPOINT;
+  const { apiKey, endpoint } = resolveClientCredentials();
   if (!apiKey || !endpoint) {
     return unresolved('missing_credentials', 'Traccia API key or endpoint not set', false);
   }
@@ -386,9 +384,7 @@ export async function settlePolicy(
   if (reserved == null) {
     return;
   }
-  const config = loadConfig();
-  const apiKey = config.tracing.api_key || process.env.TRACCIA_API_KEY;
-  const endpoint = config.tracing.endpoint || process.env.TRACCIA_ENDPOINT;
+  const { apiKey, endpoint } = resolveClientCredentials();
   const agentId = getAgentId() || process.env.TRACCIA_AGENT_ID;
   if (!apiKey || !endpoint || !agentId) {
     return;
@@ -428,7 +424,11 @@ function estimateTokens(kwargs: Record<string, unknown>): number | undefined {
   return Math.max(Math.floor(blob.length / 4), 1);
 }
 
-export async function enforceLlmCall(kwargs: Record<string, unknown>): Promise<Record<string, unknown> | undefined> {
+/** Check policy before an LLM call. `vendor` is the span's llm.vendor; Spend Cap uses it to pick that provider's price. */
+export async function enforceLlmCall(
+  kwargs: Record<string, unknown>,
+  vendor?: string,
+): Promise<Record<string, unknown> | undefined> {
   if (!pepEnabled()) {
     return undefined;
   }
@@ -441,6 +441,9 @@ export async function enforceLlmCall(kwargs: Record<string, unknown>): Promise<R
     input_tokens: estimateTokens(kwargs),
     retrieval: retrievalContext(traceId),
   };
+  if (vendor) {
+    context.vendor = vendor;
+  }
   const prompt = promptContext();
   if (Object.keys(prompt).length) {
     context.prompt = prompt;

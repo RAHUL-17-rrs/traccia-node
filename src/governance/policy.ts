@@ -3,7 +3,7 @@
  */
 
 import axios, { AxiosInstance } from 'axios';
-import { loadConfig } from '../config/config';
+import { resolveClientCredentials } from '../config/client-config';
 import { govConfig } from './config';
 
 const DEFAULT_STATUS_PATH = '/api/v1/agents/{agent_id}/status';
@@ -166,14 +166,12 @@ function missingSetting(message: string, failOpen: boolean): void {
 }
 
 async function fetchAndApplyStatus(agentId: string, failOpen: boolean): Promise<void> {
-  const config = loadConfig();
-  const apiKey = config.tracing.api_key;
+  const { apiKey, endpoint: tracesEndpoint } = resolveClientCredentials();
   if (!apiKey) {
     missingSetting('Traccia API key not found. govern() requires a Traccia platform account.', failOpen);
     return;
   }
 
-  const tracesEndpoint = config.tracing.endpoint;
   if (!tracesEndpoint) {
     missingSetting('Traccia endpoint not found. govern() requires a Traccia platform endpoint.', failOpen);
     return;
